@@ -1,4 +1,4 @@
-setwd("/home/delaram/delaram/data/CareDx/CareDx_2019_Feb_12/cor_fasta")
+setwd("/home/delaram/delaram/data/CareDx/CareDx_2019_Feb_12/one_fasta")
 library(stringr)
 library(data.table)
 library(GenomicRanges)
