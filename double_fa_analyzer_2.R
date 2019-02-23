@@ -101,7 +101,7 @@ p_param = PileupParam(max_depth = 50000, min_base_quality=10, min_mapq=5,
 
 l <- list.files(".",".bam$")
 samples <- sub(".*_","", sub(".bam","",l))
-samples <- c('12707','12708','12709','12710','12711','12712')
+#samples <- c('12707','12708','12709','12710','12711','12712')
 bf <- mclapply(l, function(i) BamFile(i, index=paste0(i, ".bai")), mc.cores=detectCores()-2)
 names(bf)<-samples
 bed.pileup <- mclapply(bf, pileup, pileupParam=p_param, mc.core=detectCores()-2)
