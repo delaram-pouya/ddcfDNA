@@ -74,6 +74,7 @@ ori.amp=amp
 sum(duplicated(paste0(ori.amp$pos,sep='_',ori.amp$chr))) #522 pos> duplicated 
 hist(ori.amp[(duplicated(paste0(ori.amp$pos,sep='_',ori.amp$chr))),]$AF) # many with very low AF 
 summary(ori.amp[(duplicated(paste0(ori.amp$pos,sep='_',ori.amp$chr))),]$AF) # slight cut-off on AF > 0.01
+## amp object contains all the positions not only targeted ones
 amp=amp[!duplicated(paste0(amp$pos,sep='_',amp$chr))|amp$AF>0.01,] # remove duplicates on a same pos with very low AF
 
 ############################# pileup section 
@@ -97,6 +98,7 @@ tmp <- mclapply(freq, function(i) {x=data.frame(str_split_fixed(i$Contig, "_", 3
 freq <- sapply(1:length(freq), function(i)cbind(tmp[[i]],freq[[i]]),simplify =F)
 sapply(1:length(freq), function(i)freq[[i]]$T.pos<<-as.numeric(as.character(freq[[i]]$start))+as.numeric(as.character(freq[[i]]$position))-1)
 
+## makes the table for all the positions in the bam file not only targeted positions 
 m <- sapply(1:length(freq), function(i)merge(freq[[i]],amp,by.x =c('chr', 'T.pos'),by.y = c('chr', 'pos'),all.x=T,all.y=F,sort=F),simplify=F)
 names(m)=samples
 
@@ -126,7 +128,8 @@ lapply(m.f, nrow) ## same as unique >> correct
 lapply(1:length(m.f), function(i) m.f[[i]]$Sample<<-samples[i])
 data=do.call(rbind, m.f)
 # before merge: total #pos=2271       after merge: each sample #pos=2621 >> multiple ALt
-data.f=merge(data,amp,by.x =c('chr', 'T.pos'),by.y = c('chr', 'pos'),all.x=T,all.y=F,sort=F) 
+## first filtering on AF+pos > better to add unique amplicon + depth 
+data.f=merge(data,amp,by.x =c('chr', 'T.pos'),by.y = c('chr', 'pos'),all.x=T,all.y=F,sort=F)  
 paste0(nrow(data.f), sep=' ', sum(table(data.f$Alt))) #### NO NA value(all pos in gnomad)
 data.f= Clean(data.f)
 
