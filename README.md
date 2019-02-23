@@ -1,6 +1,6 @@
 # ddcfDNA
 project on analyzing donor-derived cell-free DNA data of transplant patients
-# R scripts description 
+## R scripts description 
 bam_analyzer: run a pileup on bam file. makes a frequency table of all nucleotides. need to source functions.R
 functions: includes different functions needed in the bam_analyzer. 
 check_alt: Quality control on bam files+ defines error+ visualization 
