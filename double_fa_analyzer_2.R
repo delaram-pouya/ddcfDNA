@@ -1,4 +1,4 @@
-setwd("/home/delaram/delaram/data/CareDx/CareDx_2019_Feb_12/one_fasta")
+setwd("/home/delaram/delaram/data/CareDx/CareDx_2019_Feb_23")
 library(stringr)
 library(data.table)
 library(GenomicRanges)
@@ -128,7 +128,7 @@ m[[i]]$position<<-as.numeric(as.character(m[[i]]$position))})
 lapply(m, function(i) paste(sum(is.na(i$A)),sum(is.na(i$T)),sum(is.na(i$C)),sum(is.na(i$G)))) 
 m = lapply(m, function(x){replace(x, is.na(x), 0)} )
 lapply(m, function(i) paste(sum(is.na(i$A)),sum(is.na(i$T)),sum(is.na(i$C)),sum(is.na(i$G)))) 
-saveRDS(m,'/media/pgdrive/users/delaram/data/SingleFastaTab_Feb12.rds')
+saveRDS(m,'/media/pgdrive/users/delaram/data/DoubleFastaTab_illumina_Feb23.rds')
 
 #m = readRDS('/media/pgdrive/users/delaram/data/DoubleFastaTab2.rds')
 
@@ -166,7 +166,7 @@ data.f$E <- sapply(1:nrow(data.f),function(i){i=data.f[i,];base=c('A','C','G','T
 data.f$ref_error <- !(data.f$m1==data.f$Ref & (data.f$m2==data.f$Alt|is.na(data.f$m2)) )& !(data.f$m1==data.f$Alt & (data.f$m2==data.f$Ref|is.na(data.f$m2) ) )
 data.f$c_error <- (data.f$alt.C>0.05 & data.f$alt.C<0.35)|(data.f$alt.C>0.65 & data.f$alt.C<0.95)
 
-saveRDS(data.f,'/media/pgdrive/users/delaram/data/Single_Fasta_finalTAB_feb12.rds')
+saveRDS(data.f,'/media/pgdrive/users/delaram/data/dFa_finalTAB_illumina_feb23.rds')
 #data.f = readRDS('/media/pgdrive/users/delaram/data/dFasta_finalTAB.rds')
 
 ## many are removed since we do not have all the 388 positions as a result of
@@ -184,7 +184,7 @@ data.f.er <- data.f2[ !(data.f2$m1==data.f2$Ref & (data.f2$m2==data.f2$Alt|is.na
 data.f.cor <- data.f2[ (data.f2$m1==data.f2$Ref & (data.f2$m2==data.f2$Alt| is.na(data.f2$m2))) | (data.f2$m1==data.f2$Alt & (data.f2$m2==data.f2$Ref|is.na(data.f2$m2))) ,]
 
 
-pdf('SingleFastaPlot_feb12.pdf')
+pdf('DoubleFastaPlot_illumina_feb23.pdf')
 ggplot(data.f2, aes(F2+1e-5, color=Sample))+geom_density()+theme_bw()+ggtitle('total data')
 ggplot(data.f2, aes(F2+1e-5, color=Sample))+geom_density()+scale_x_log10()+theme_bw()+ggtitle('total data(log)')
 ggplot(data.f.cor, aes(F2+1e-5, color=Sample))+geom_density()+scale_x_log10()+theme_bw()+ggtitle('non.ref.error(log) subset')
@@ -251,7 +251,7 @@ tmp$c_error.Sum=rowSums(tmp[,colnames(tmp)%in%paste0('c_error_',samples)])
 #saveRDS(object = tmp, file = '/home/delaram/delaram/data/CareDx/DoubleFastaErrorTab.rds')
 e=subset(tmp,ref_error.Sum>0)
 ec=subset(tmp,c_error.Sum>0)
-saveRDS(ec,file= '/home/delaram/delaram/data/CareDx/careDxErrors_SingleFa_feb12.rds')
+#saveRDS(ec,file= '/home/delaram/delaram/data/CareDx/careDxErrors_SingleFa_feb12.rds')
 #ec = readRDS('/home/delaram/delaram/data/CareDx/careDxErrors.rds')
 #ggplot(tmp, aes(x=ref_error.Sum, y=c_error.Sum))+geom_point(alpha = 1/5,colour='blue')#geom_bin2d(bins=8)
 
@@ -264,7 +264,7 @@ barplot(table(tmp$ref_error.Sum),main='ref_error',col='blue')
 par(mfrow=c(1,1))
 e.tmp=tmp[,colnames(tmp)%in%paste0('E_',samples)]
 thr=1
-e.tmp=subset(e.tmp,E_12707<thr&E_12708<thr&E_12709<thr&E_12710<thr&E_12711<thr&E_12712<thr)
+#e.tmp=subset(e.tmp,E_12707<thr&E_12708<thr&E_12709<thr&E_12710<thr&E_12711<thr&E_12712<thr)
 plot(e.tmp)
 alt.c.tmp=tmp[,colnames(tmp)%in%paste0('alt.C_',samples)]
 plot(alt.c.tmp,col='dark blue')
