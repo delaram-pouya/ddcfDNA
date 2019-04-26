@@ -1,0 +1,495 @@
+---
+title: "ddcfDNA Analysis"
+output: html_notebook
+---
+
+##### This is a pipeline for analysis of donor-derived cell-free DNA data of transplant patients.
+###### * some guides are provided below the code chunks 
+
+
+
+```{r}
+pac.Install <- function(){
+  #BiocManager::install('pacman')
+  pac <- list('stringr', 'data.table', 'GenomicRanges', 'IRanges', 'rlang',
+              'ggplot2', 'Rsamtools', 'BiocManager', 'parallel', 'plyr', 'UpSetR','gridExtra','knitr')
+  print(paste(pac , lapply(pac, require, character.only = TRUE), sep = ' : '))
+  pacman::p_load('stringr', 'data.table', 'GenomicRanges', 'IRanges', 'rlang',
+                 'ggplot2', 'Rsamtools', 'BiocManager', 'parallel', 'plyr', 'UpSetR','gridExtra','knitr')
+}
+pac.Install()
+```
+loading required packages
+
+
+```{r}
+gnomad_genome <-fread("/media/pgdrive/apps/annovar/humandb/temp/gnom_genome_sub.txt", na.strings = ".", header = T, data.table = T)
+colnames(gnomad_genome)[1] <- "Chr"
+gnomad_genome2=subset(gnomad_genome, Ref%in%c('A','T','C','G')&Alt%in%c('A','T','C','G'))
+gnomad_genome2$Chr=paste0('chr',gnomad_genome2$Chr)
+head(gnomad_genome2)
+```
+loading gnomad dataset. Information from gnomad is needed for filtering positions based on allele frequency. 
+
+
+
+
+```{r}
+finalPos=fread("~/delaram/data/CareDx/S1_amp.txt",na.strings='NA',header = T,data.table = T)
+finalPos <- subset(finalPos, select=c('SNP_Name','Chromosome','Position','ALT','REF','Chromosome_Mock','Position_Mock'))
+
+amp <- merge(finalPos, gnomad_genome2, by.x=c('Chromosome','Position'),by.y= c('Chr','Start'),
+                 all.x=T, all.y =F, sort =F, suffixes = c(".x", ".y"), no.dups = TRUE,
+                 allow.cartesian=getOption("datatable.allow.cartesian"))
+
+amp <- subset(amp,!duplicated(Chromosome_Mock))  
+amp <- subset(amp,select=c('Chromosome','Position','SNP_Name','ALT','REF','Chromosome_Mock','Position_Mock','gnomAD_genome_ALL'))
+colnames(amp)<-c('Chromosome','Position','rsID','Alt','Ref','Chromosome_Mock','Position_Mock','AF')
+amp <- subset(amp, Position_Mock>150 & Position_Mock< 350 & AF > 0.3 & AF < 0.7)
+amp <- as.data.frame(amp)
+
+```
+Making 405 target SNP positions from S1 sample results, in case the exact positions aren't available.
+These filterings are based on a few assumptions:
+
+1. There is only one SNP position in each amplicon -> duplicated amplicon names(Chromosome_Mock) should not be included in our list. 
+
+2. The target SNP position is placed in the middle of the amplicon( Position_Mock ~ 200).
+
+3. The allele frequency(AF) of the SNP position is ~ 0.5 
+
+
+
+```{r}
+#saveRDS(amp.fin,'~/delaram/data/CareDx/finalSNPs.rds')
+amp <- readRDS('~/delaram/data/CareDx/finalSNPs.rds')
+colnames(amp)
+```
+Alternatively, you can load the targeted SNPs directly. Pay attention to the column names. if a new input file is used, change the column names accordingly. 
+
+
+
+```{bash}
+cd ~/delaram/data/CareDx/CareDx_2019_Feb_12/cor_fasta 
+ls
+
+```
+set your bam file names as *metaInfo_fileName.bam*. put the respective index files with the same name format in the same folder
+
+
+
+```{r}
+l <- list.files(path='/home/delaram/delaram/data/CareDx/CareDx_2019_Feb_12/cor_fasta', pattern='*.bam$')
+samples <- sub(".*_","", sub(".bam","",l))
+print(samples)
+```
+loading the bam files
+
+
+```{r}
+p_param = PileupParam(max_depth = 50000, min_base_quality=10, min_mapq=5,
+                      min_nucleotide_depth=0, min_minor_allele_depth=0,
+                      distinguish_strands=TRUE, distinguish_nucleotides=TRUE,
+                      ignore_query_Ns=TRUE, include_deletions=TRUE, include_insertions=FALSE,
+                      left_bins=NULL, query_bins=NULL, cycle_bins=NULL)
+
+
+setwd('/home/delaram/delaram/data/CareDx/CareDx_2019_Feb_12/cor_fasta')
+bf <- mclapply(l, function(i) BamFile(i, index=paste0(i, ".bai")), mc.cores=detectCores()-2)
+# Running Rsamtools pileup function on bam files
+bed.pileup <- mclapply(bf, pileup, pileupParam=p_param, mc.cores=detectCores()-2)
+head(bed.pileup[[1]])
+
+```
+setting pileup parameters and running the pileup function of Rsamtools package on them. 
+In order to get the frequency of nucleotides in each position, we need to change the structure of this table  
+
+
+
+
+```{r}
+MakepileupFreq <- function(pileupres) {
+  nucleotides <- levels(pileupres$nucleotide)
+  res <- split(pileupres, pileupres$seqnames)
+  res <- lapply(res, function (x) {split(x, x$pos)})
+  res <- lapply(res, function (positionsplit) {
+    nuctab <- lapply(positionsplit, function(each) {
+      chr = as.character(unique(each$seqnames))
+      pos = as.character(unique(each$pos))
+      tablecounts <- sapply(nucleotides, function (n) {sum(each$count[each$nucleotide == n])})
+      c(chr,pos, tablecounts)
+    })
+    nuctab <- data.frame(do.call("rbind", nuctab),stringsAsFactors=F)
+    rownames(nuctab) <- NULL
+    nuctab
+  })
+  res <- data.frame(do.call("rbind", res),stringsAsFactors=F)
+  rownames(res) <- NULL
+  colnames(res) <- c("seqnames","start",levels(pileupres$nucleotide))
+  res[3:ncol(res)] <- apply(res[3:ncol(res)], 2, as.numeric)
+  return(res)
+}
+
+```
+this function takes in the raw output of Rsamtoosl pileup function and makes a pileup frequency table
+
+
+
+
+```{r}
+freq <- mclapply(bed.pileup, MakepileupFreq, mc.cores=detectCores()-2)
+names(freq) <- paste(names(bf), ".freq", sep= "")
+head(freq[[1]])
+```
+making a pileup frequency table of the bam files with MakepileupFreq function. The number of each base is listed for all the positions.  
+
+
+
+
+```{r}
+Add.attrib.init <- function(df){
+ 
+  tmp <- data.frame(str_split_fixed(df$seqnames, "_", 4),stringsAsFactors = F)
+  df$chr <- tmp[,1]
+  df$position<- as.numeric(tmp[,2])+ as.numeric(df$start) -1 
+  
+  df<- df[,!colnames(df) %in% c('+','-','=')]
+
+  return(df)
+}
+```
+this function takes the output of MakepileupFreq as an input, cleans the table and adds a *position* column
+
+
+
+```{r}
+Add.attrib <- function(df){
+
+  df$depth <- df$A + df$T + df$C + df$G
+  tmp <- t(apply(subset(df,select=c('A','C','G','T')), 1, sort))
+  
+  df$F1 <- tmp[,4]/df$depth # Maximum frequency allele
+  df$F2 <- tmp[,3]/df$depth # Second maximum frequency allele
+  df$ALT.freq <- (rowSums(tmp[,-4]))/df$depth # (rowSum - max1)/depth
+  head(df)
+  df.n <- subset(df, select=c('A','T','C','G'))
+  m1.index <- apply(df.n,1,which.max)
+  df$m1 <- colnames(df.n)[apply(df.n,1,which.max)]
+  
+  sapply(1:nrow(df.n), function(i) {df.n[i,m1.index[i]] <<-(-1)}) # faster than sorting
+  df$m2 <- colnames(df.n[,1:4])[apply(df.n[,1:4],1,which.max)]
+  df[(is.na(df$ALT.freq))|(df$ALT.freq==0),]$m2<-NA
+
+  return(df)
+}
+
+
+```
+This function adds the following attributes to the output of *Add.attrib.init* function 
+
+m1: first max frequent allele 
+
+m2: second max frequent allele
+
+F1: m1 frequency 
+
+F2: m2 frequency 
+
+ALT.freq: alteration frequency{sum(frequency of all alleles)- F1)/depth}
+
+
+
+
+```{r}
+Add.Error <- function(df){
+  df$alt.C <- sapply(1:nrow(df),function(i){i=df[i,];base=c('A','C','G','T'); l =!base%in%c(i$Ref); do.call(sum,i[base[l]]) } ) / df$depth
+  df$E <- sapply(1:nrow(df),function(i){i=df[i,];base=c('A','C','G','T'); l =!base%in%c(i$Alt, i$Ref); do.call(sum,i[base[l]]) } ) / df$depth
+  df$ref_error <- ifelse(!(df$m1==df$Ref & (df$m2==df$Alt|is.na(df$m2)) )& !(df$m1==df$Alt & (df$m2==df$Ref|is.na(df$m2)) ),1,0)
+  df$c_error <- ifelse((df$alt.C>0.05 & df$alt.C<0.35)|(df$alt.C>0.65 & df$alt.C<0.95),1,0) ## thresholds are based on illumina results
+  return(df)
+}
+
+```
+This function adds 4 different attributes to the table. *c_error* (careDx error) and *ref_error* (ref-alt error) are 2 types of error which are defined to evaluate each position. *c_error* is interpreted based on *alt.C*. 
+
+alt.C = Sum(frequency of all bases excluding the nucleotide which is the same as the 'Reference'(Ref) in that specific position)
+
+E = Sum(frequency of all bases excluding the nucleotide which is the same as the 'Ref' AND 'Alt'(defined based on the gnomad dataset) in that specific position)
+
+ref_error is defined based on the fact that we expect *m1* to be either 'Ref' or 'Alt' and m2 to be the other one -> (m1==Ref)&(m2==Alt) or (m1==Alt)&(m2==Ref). m2 might be NA if alteration frequency is 0 in that position. In order to understand the concept of c_error, please check the sigmoid plots at the end of this tutorial.  
+
+
+
+```{r}
+freq2 <- mclapply(freq , Add.attrib.init , mc.cores=detectCores()-2)
+names(freq2) <- samples
+
+freq2 <- lapply(freq2, subset, select=c('chr','position','A','T','C','G'))
+freq2 <- lapply(freq2, ddply, .(chr, position), numcolwise(sum))  ## summing positions's values (needed for the double amplicon version)
+head(freq2[[1]])
+
+```
+applying the Add.attrib.init function to the tables. 
+
+we need to sum the #bases for the positions which have the same chromosome and position if the costume *double amplicon reference file* have been used for the alignment. (there are 2 versions of each amplicon in this reference file)
+
+
+
+
+```{r}
+amp <- amp[,-c('ALT','REF')]  ## some alt and ref in gnomad are different from amplicon!
+colnames(amp)[6:7] <- c('Ref','Alt') ## keeping gnomad's Ref & Alt 
+
+m <- sapply(1:length(freq2), function(i)merge(amp,freq2[[i]],by.x=c('Chromosome','Position'),by.y=c('chr','position'),sort=F,all.x=T,all.y=F),simplify =F )
+m <- lapply(m, function(i) i<<-as.data.frame(i[!is.na(i$A) & !is.na(i$T) & !is.na(i$C) & !is.na(i$G),])) #removing positions not present in bam files
+
+names(m) <- samples
+head(m[[1]])
+
+```
+Merging dataframes with the amplicon leads to a table which contains only the targeted positions. The number of positions remained after merging are usually less than 405 since. This means some of our targeted positions are not present in the bam file. This could be as a result of hard-filtering during the sequencing and base-calling procedures.  
+
+
+```{r}
+
+lapply(m, nrow) # number of remaining positions
+
+m2 <- mclapply(m , Add.attrib, mc.cores = detectCores()-2) 
+m2 <- mclapply(m2, Add.Error, mc.cores = detectCores()-2)
+invisible(sapply(1:length(m2), function(i) m2[[i]]$Sample <<- samples[i])) # add sample name for plotting
+
+lapply(m2 , function(df)paste0(sum(is.na(df$Ref)),sep=' ',sum(is.na(df$Alt)),sep=' ',sum(is.na(df$AF))) )
+
+```
+
+after applying the *Add.attrib* function, some attributes are added. the *Add.Error* function, adds the errors for further evaluation. 
+
+For some positions, 'Ref', 'Alt' and 'AF' values are NA. These positions are not included in the gnomad dataset. 
+
+
+
+
+```{r}
+# m <- lapply(m, function(x){replace(x, is.na(x), 0)} )
+data = subset(do.call(rbind, m2), ! is.na(ref_error))
+
+data$label <- sapply(1:nrow(data), function(i){
+  if(data[i,'ref_error'] & data[i,'c_error']) return('both')
+  else if(data[i,'ref_error']) return('ref-alt error')
+  else if(data[i,'c_error']) return('CareDx error')
+  else return('non')})
+
+## frequency of different errors 
+
+data.error <- data[ !(data$m1==data$Ref & (data$m2==data$Alt|is.na(data$m2))) & !(data$m1==data$Alt & (data$m2==data$Ref|is.na(data$m2))) ,]
+data.correct <- data[ (data$m1==data$Ref & (data$m2==data$Alt| is.na(data$m2))) | (data$m1==data$Alt & (data$m2==data$Ref|is.na(data$m2))) ,]
+
+```
+All the samples are bound together, then labels are added for plotting. 
+
+*data.error* and *data.correct* tables are subsets of *data* table for 'error' and 'correct' positions respectively. m2 tables are reserved in case of further examination. Only non-NA positions are included in the *data* table for the rest of the analysis 
+
+
+
+
+
+```{r}
+
+
+p1 <- ggplot(data, aes(F2+1e-5, color=Sample))+geom_density()+theme_bw()+
+  ggtitle('total data')+scale_colour_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))
+
+p2 <- ggplot(data, aes(F2+1e-5, color=Sample))+geom_density()+scale_x_log10()+theme_bw()+
+  ggtitle('total data(log)')+scale_colour_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))
+
+p3 <- ggplot(data, aes(y=F2+1e-5, x=Sample))+scale_y_log10()+geom_violin(aes(fill=Sample))+geom_boxplot(width=0.17)+
+  theme_bw()+scale_fill_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))
+
+p4 <- ggplot(data, aes(y=F2+1e-5, x=Sample))+scale_y_log10()+geom_boxplot(width=0.7,aes(fill=Sample))+
+  theme_bw()+scale_fill_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))
+
+grid.arrange(p1, p2, p3, p4 ,nrow=2 ,ncol=2 )
+
+```
+These plots are the Core results. The log-density plot is the most informative one(log-transformed x-axis plot is much more elaborative). F2(frequency of second max position) represents the frequency of fragments received from the donor. Pay attention to the peak of each density-plot. We expect the transplant samples peak to have higher F2 value than the normal sample. *Samples are sorted based on their rejection rates.* 12707 and 12708 are our normal samples; therefore, they do not include any contamination of the donor fragments. 12712 and 12711(replicate samples) have the highest rejection rate, 12709 and 12710(replicates) are moderate. Box-plots and Violin-plots also confirm our results. 
+
+
+
+
+```{r}
+
+p1 <- ggplot(data.correct, aes(F2+1e-5, color=Sample))+geom_density()+scale_x_log10()+theme_bw()+
+  ggtitle('non.ref.error(log) subset')+scale_colour_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))
+
+p2 <- ggplot(data, aes(E+1e-5, color=Sample))+geom_density()+theme_bw()+
+  ggtitle('total data')+scale_colour_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))
+
+p3 <- ggplot(data, aes(E+1e-5, color=Sample))+geom_density()+scale_x_log10()+theme_bw()+
+  ggtitle('total data(log)')+scale_colour_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))
+
+grid.arrange(p1, p2, p3 ,nrow = 2,ncol =2)
+
+
+```
+additional results. density plots for positions which do not have ref-error.The others are the error distribution plots. 
+
+
+
+```{r}
+par(mfrow=c(1,2))
+hist(data$depth, col='plum2',breaks=50,main='depth distribution',xlab='depth')
+data = subset(data, depth>400)  
+hist(data$depth, col='paleturquoise1',breaks=40,main='depth distribution(filtered)',xlab='depth')
+par(mfrow=c(1,1))
+
+```
+data is filtered based on depth. Since they have used a deep sequencing in this setting, we expect the depth to be higher than at least ~400. 
+
+
+```{r}
+
+data.sub = split(data, data$Sample)
+lapply(data.sub, nrow) ## number of targeted positions ~ 370/405 remained
+
+lapply(data.sub,function(i)table(i$ref_error)) # ref-alt error in each sample
+lapply(data.sub,function(i)table(i$c_error)) # careDx error in each sample
+
+data.sub = lapply(data.sub,  function(i) i[order(i$alt.C),])
+data.sub = lapply(data.sub, function(i){ i$index=1:nrow(i); i})
+
+lapply(data.sub , function(i) paste0(length(unique(i$rsID)),sep=' : ', length(i$rsID) ) ) #check if all positions are unique
+
+```
+
+instead of using *m* tables, *data* table is split again. m2 has remained unchanged in case you might need the raw tables in the future. the number of positions with and without ref-alt error is printed in each sample. afterward, carex error for each sample is printed. hopefully, number of error positions('1' values) are low. 
+
+
+```{r}
+p <- lapply(data.sub, function(t){ggplot(t, aes(x=index,y=alt.C, color=label))+geom_point(size=0.9)+
+    theme_bw()+ggtitle(t[1,'Sample'])+
+    geom_text(hjust = 0, nudge_x = 0.05,check_overlap = TRUE,size=1.6,colour='black', 
+              aes(label=ifelse(c_error,Chromosome_Mock,'')))})
+do.call(grid.arrange, p)
+
+```
+alt.C is defined as the summation of the frequency of all positions which are not equal to the 'Ref'. Therefore, we expect alt.C to be either ~1 or ~0 for homozygous positions and ~0.5 for the heterozygous positions. We define positions with (alt.C>0.05 & alt.C<0.35) or (alt.C>0.65 & alt.C<0.95) as c_error. positions are sorted based on their alt.C value and an index is given to each of them. Each position has been labeled as one the following: CareDx error, ref-alt error, both(has both the errors), non(non-error positions) 
+
+
+```{r}
+data2 = do.call(rbind,data.sub)  ## difference with 'data' table > an index column has been added
+data2$Sample = as.character(data2$Sample)
+ggplot(data2, aes(x=index,y=alt.C, color=Sample))+geom_point(size=0.9)+
+  theme_bw()+scale_colour_manual(values=c('tomato3','maroon' ,'royalblue3','turquoise3','springgreen3', 'yellow3'))+ggtitle('total data')
+
+```
+
+Comparing CareDx errors distribution in different samples. 
+
+
+```{r }
+
+tmp <- sapply(1:length(data.sub), function(i) subset(data.sub[[i]],select=c(Chromosome,Position,ref_error, c_error,Sample, alt.C,E)), simplify = F)
+idx <- which( colnames(tmp[[1]]) %in% c('Chromosome','Position','ref_error', 'c_error', 'alt.C','E' ))
+n <- lapply(tmp, function(i){colnames(i)[idx]=paste(colnames(i)[idx],sep='_',i[1,'Sample'],collapse=NULL)}) # making sample names 
+
+g <- sapply(1:length(tmp), function(i)colnames(tmp[[i]])[idx]<<-n[[i]] ) # adding sample name to the column name
+g <- sapply(1:length(tmp),function(i)rownames(tmp[[i]])<<-paste0(tmp[[i]]$Chromosome,sep='_',tmp[[i]]$Position))
+g <- sapply(1:length(tmp), function(i) tmp[[i]]<<-tmp[[i]][,-c(1,2)]) # removing chr and pos columns 
+g <- sapply(1:length(tmp), function(i) tmp[[i]]<<-tmp[[i]][, colnames(tmp[[i]]) != 'Sample']) # removing Sample column 
+
+
+name <- sapply(1:length(tmp),function(i) row.names(tmp[[i]])) # position ID = chr_position
+ints <- Reduce(intersect,name) 
+length(ints) # number of positions present in all samples 
+
+tmp <- lapply(1:length(tmp), function(i) tmp[[i]][rownames(tmp[[i]])%in%ints,])
+tmp <- lapply(1:length(tmp), function(i) tmp[[i]][order(row.names(tmp[[i]])),] )
+tmp2=do.call(cbind,tmp)
+
+
+tmp2$ref_error.Sum=rowSums(tmp2[,colnames(tmp2)%in%paste0('ref_error_',samples)])
+tmp2$c_error.Sum=rowSums(tmp2[,colnames(tmp2)%in%paste0('c_error_',samples)])
+
+e=subset(tmp2,ref_error.Sum>0)
+ec=subset(tmp2,c_error.Sum>0)
+
+tmp.p <- ddply(tmp2, .(ref_error.Sum, c_error.Sum), summarise, num=length(ref_error.Sum))
+p1 <- ggplot(tmp.p, aes(ref_error.Sum, c_error.Sum))+geom_point(aes(size=num))+scale_size_continuous(trans="log2")
+
+p2 <- ggplot(data=data.frame(table(tmp2$c_error.Sum)),aes(x=Var1, y=Freq)) +geom_bar(stat="identity",color="dark red", fill="palevioletred1")+
+  theme_bw()+xlab('careDx error')
+
+p3 <- ggplot(data=data.frame(table(tmp2$ref_error.Sum)),aes(x=Var1, y=Freq)) +geom_bar(stat="identity",color="dark blue", fill="paleturquoise3")+
+  theme_bw()+xlab('Ref_Alt error')
+
+
+```
+Checking the distribution of both c-error and alt-ref error in all the samples. this section is preprocessing the data for error visualization below. Also, the number of SNP position which is presented in all samples is printed(341/405 is fewer than we expected and is probably a result of hard-filtering)
+
+
+```{r}
+grid.arrange(p1, p2, p3 ,nrow = 2,ncol =2)
+
+```
+
+the first plot(p1) shows how many data points have each of the errors. x and y-axis ranges are between 0 and 6(total number of samples) -> for instance, (ref_error.Sum=3,c_error.Sum=2) point represents the number of SNPs(data points) with that are labeled as c_error in 2 samples and are labeled as Ref-Alt error in 3 of the samples. 
+
+p2 shows how many SNPs are labeled as careDx error(c_error) in [0,6] samples.
+
+p3 shows how many SNPs are labeled as Ref-ALt error(ref_error) in [0,6] samples.
+
+
+```{r}
+## making the table needed for UnpSet function
+
+x <- lapply(data.sub, function(i) i[i$c_error==1,])  # positions which have careDx error 
+lapply(x, nrow) # number careDx errors in each sample
+
+x <- lapply(x, function(i) paste0(i$Chromosome,sep='_' ,i$Position))
+uni <- unique(unlist(x)) 
+uni2 <- uni[uni%in% ints] ## consider positions which are present in all samples(regardless of if they are error or not)
+
+tab <- as.data.frame(uni2)
+tab <- cbind(tab,sapply(1:length(x),function(j) {sapply(1:nrow(tab), function(i) ifelse( tab[i,'uni2']%in% x[[j]],1, 0))}))
+
+colnames(tab)[1] <- 'posID'
+colnames(tab)[2:(length(samples)+1)] <- names(x)
+
+```
+Number of position which are labeled as careDx-error are printed. This section makes the table needed for the UpSet plot. 
+
+
+```{r}
+upset(tab,sets = names(x) ,
+    matrix.color = "#990000",mainbar.y.label = 'CareDx error intersection',
+    sets.bar.color = c('darkslategrey','cyan4','cyan3','cyan3','cyan2','cyan1'),
+    sets.x.label = c('(alt.C>0.05 & alt.C<0.35)|(alt.C>0.65 & alt.C<0.95)'),
+    keep.order = F,nintersects=NA, point.size = 2.6,line.size = 0.7)
+```
+Upset plot shows the distribution and intersection of SNPs with  C_error between different samples. 
+
+
+```{r}
+e.tmp=tmp2[,colnames(tmp2)%in%paste0('E_',samples)]
+plot(e.tmp)
+
+```
+
+Error(E) correlation between all the samples. As it was mentioned before, E is defined as: Sum(frequency of all bases excluding the nucleotide which is the same as the 'Ref' AND 'Alt'(defined based on gnomad dataset) in that specific position). It can be interesting to check E distribution in replicated samples. Samples (12711,12712) and (12709,12710) are replicated and seem to be highly correlated. 
+
+
+```{r}
+alt.c.tmp=tmp2[,colnames(tmp2)%in%paste0('alt.C_',samples)]
+plot(alt.c.tmp,col='dark blue')
+```
+
+alt.C distribution between all the samples. Again, replicates seem to be highly correlated. data points which are in the middle of the plot(alt.C ~ 0.5) are the heterozygous positions. Points around (0,0) and (1,1) are the homozygous positions. In the plots which are comparing the replicates, ideally, there should not be any points between [0,0.5] and [0.5,1]. These are the position which will be labeled as CareDx error.
+
+Interpreting the plots which are comparing non-replicate samples: some snps might be homozygous in one sample and heterozygous in the other one. Or they might be homozygous with different alleles in the two samples. This can lead to the patterns shown above.  
+
+
+
+
+
+*The END*
+
